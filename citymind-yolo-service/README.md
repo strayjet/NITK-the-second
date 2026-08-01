@@ -19,48 +19,7 @@ or live stream) into a standardized JSON observation. It has no opinion about
 what should happen next — no simulation, no planning, no dashboards, no auth,
 no database. That all belongs to layers above this one.
 
-## Where this code came from
-
-This project was assembled from two source repositories, keeping only what
-belongs in a pure CV inference layer:
-
-- **Vehicle detection + tracking** (`app/tracker.py`), **accident detection**
-  (`app/detector.py`), and **emergency-vehicle detection** (`app/detector.py`)
-  are ported from a larger smart-traffic-management monorepo's `ai-engine`
-  module — specifically its `YoloWrapper`, `AccidentDetector` +
-  `AccidentMotionEvaluator` (model output gated by frame-motion delta and
-  vehicle-proximity heuristics), and ambulance-livery heuristic. That logic
-  was already well-factored and is reused essentially unchanged, just
-  reorganized into single-purpose modules and stripped of everything unrelated
-  to detection (license-plate OCR, helmet-violation checks, traffic-signal
-  color detection, the RL signal controller, and the ML traffic-volume
-  forecaster all lived in the same file and have been removed — they're
-  simulation/enforcement concerns, not observation).
-- **Tracking** now explicitly pins Ultralytics' `bytetrack.yaml` tracker
-  config. The source project called `.track(persist=True)` without pinning a
-  tracker, which silently defaults to BoT-SORT — ByteTrack is now used
-  explicitly, matching what this project actually needs.
-- A second, smaller standalone accident-detection prototype (Flask + a single
-  YOLO "Accident" class model) was also reviewed. None of its code was
-  reused: it reloaded the YOLO model on every request, used blocking
-  `cv2.imshow`/`cv2.waitKey` calls incompatible with a headless server, hardcoded
-  Windows file paths, and shipped hardcoded email credentials. Its trained
-  weight files were also not adopted — the accident-detection pipeline
-  ported from the first repo already combines model confidence with motion
-  and collision heuristics, which is a stronger signal than raw model output
-  alone.
-
-## What was deliberately left out
-
-Per CityMind's layering, this service contains **no**:
-Flask, Express, MongoDB, Cloudflare, React, admin/citizen dashboards,
-authentication, OAuth, Socket.io, OCR/license-plate recognition, email
-alerts, cloud storage, Android/Capacitor, report or violation systems, or
-deployment/infra configs. Traffic-signal color detection, the RL signal
-controller, and ML traffic-volume forecasting were also excluded — they're
-simulation-layer concerns that consume this service's output, not part of it.
-
-## Project structure
+## Yolo service structure
 
 ```
 citymind-yolo-service/
