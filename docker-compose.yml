@@ -1,0 +1,128 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: citymind-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: citymind
+      POSTGRES_PASSWORD: citymind
+      POSTGRES_DB: citymind
+    ports:
+      - "5432:5432"
+    volumes:
+      - citymind_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U citymind -d citymind"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: citymind-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ml-service:
+    build:
+      context: ./ml-service
+    container_name: citymind-ml-service
+    restart: unless-stopped
+    env_file:
+      - ./ml-service/.env.example
+    ports:
+      - "8001:8001"
+    volumes:
+      # NOT read-only: yolov8n.pt (the vehicle-detection checkpoint) is
+      # publicly downloadable and entrypoint.sh will fetch it into this
+      # directory at container startup if it's missing (see
+      # ml-service/entrypoint.sh). accident_best.pt is a project-specific
+      # fine-tuned checkpoint with no public source — it has no auto-fetch
+      # path and MUST be placed in ./ml-service/weights/ on the host
+      # yourself; without it, accident detection reports
+      # accident_model_loaded=false (service still starts and runs fine
+      # otherwise).
+      - ./ml-service/weights:/app/weights:z
+      - ./ml-service/config:/app/config:ro,z
+
+  backend:
+    build:
+      context: ./backend
+    container_name: citymind-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env.example
+    environment:
+      # Overrides for the .env.example defaults so the compose network's
+      # service names resolve correctly instead of localhost.
+      #
+      # This points at the `citymind_geodata` named volume below, NOT a
+      # host-path bind mount. A prior version of this file bind-mounted
+      # ./data/worldpop.tif, a file that was never included in the repo —
+      # Docker's bind-mount semantics silently create an EMPTY DIRECTORY at
+      # that path rather than failing `docker compose up`, which is exactly
+      # the "not recognized as being in a supported file format" bug this
+      # fixes. entrypoint.sh (via scripts/fetch_worldpop.py) downloads a
+      # valid raster into this volume on first startup if one isn't already
+      # there, so nothing needs to be manually copied onto the host.
+      CITY_LOGIC_WORLDPOP_TIF_PATH: /app/data/worldpop.tif
+      YOLO_SERVICE_BASE_URL: http://ml-service:8001
+      DATABASE_URL: postgresql+asyncpg://citymind:citymind@postgres:5432/citymind
+      DATABASE_SYNC_URL: postgresql+psycopg2://citymind:citymind@postgres:5432/citymind
+      # Redis enables real-time WebSocket fan-out across multiple backend
+      # replicas. A single backend instance works fine without it too.
+      REDIS_URL: redis://redis:6379/0
+      # Allow the frontend container (and any browser) to call the API and
+      # open the WebSocket. Tighten this in production.
+      CORS_ALLOW_ORIGINS: "*"
+      # city_logic (routing / closure simulation / facility recommendation)
+      # is on by default: the road graph is built live from OpenStreetMap
+      # at startup (needs network — see app/core/city_logic.py's Overpass
+      # mirror list) and the WorldPop raster is auto-downloaded into the
+      # citymind_geodata volume by entrypoint.sh if not already present.
+      # Set to "false" to skip city_logic entirely (e.g. fully offline /
+      # CI use) — /city/* then returns a clean 503 instead of a crash.
+      CITY_LOGIC_ENABLED: "true"
+      # No live camera/stream sources are polled by default (no mock data).
+      # Point this at real RTSP/HTTP camera URLs to enable continuous
+      # detection, e.g.:
+      # LIVE_CAMERA_SOURCES: '[{"camera_id":"CAM_01","source_url":"rtsp://host/stream1","poll_interval_seconds":10}]'
+      LIVE_CAMERA_SOURCES: "[]"
+    ports:
+      - "9000:9000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ml-service:
+        condition: service_started
+    volumes:
+      # Persists the auto-downloaded (or manually supplied) WorldPop raster
+      # across container restarts/rebuilds, so it's fetched at most once.
+      # To supply your own raster instead of auto-downloading, drop a valid
+      # worldpop.tif into this volume before first startup (e.g. `docker
+      # compose run --rm -v citymind_geodata:/data busybox cp /path
+      # /data/worldpop.tif`) — fetch_worldpop.py leaves an existing valid
+      # file untouched.
+      - citymind_geodata:/app/data
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: citymind-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      - backend
+
+volumes:
+  citymind_pgdata:
+  citymind_geodata:
