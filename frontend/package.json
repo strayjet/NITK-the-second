@@ -1,0 +1,14 @@
+{
+  "name": "citymind-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "CityMind dashboard — no-build vanilla JS (native ES modules). Vite is used ONLY as a zero-config local dev server here; production still ships as plain static files behind nginx (see Dockerfile), not a Vite build.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host --port 5173",
+    "preview": "vite preview --host --port 5173"
+  },
+  "devDependencies": {
+    "vite": "^5.4.11"
+  }
+}

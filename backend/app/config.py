@@ -1,0 +1,145 @@
+"""
+Centralized configuration for citymind-backend.
+
+Every tunable value lives here and is overridable via environment variables
+(or a `.env` file loaded at process start). Nothing else in the codebase
+should read `os.environ` directly — import `settings` from this module
+instead.
+"""
+
+from __future__ import annotations
+
+import json
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    # --- Service metadata ---------------------------------------------------
+    service_name: str = "citymind-backend"
+    host: str = "0.0.0.0"
+    port: int = 9000
+    log_level: str = "INFO"
+
+    # --- Upstream: ml-service (citymind-yolo-service) -----------------------
+    # Base URL of the standalone YOLO detection microservice. This backend is
+    # a pure client of that service and never imports/modifies its code.
+    # NOTE: ml-service's own default port (see ml-service/app/config.py) is
+    # 8001, not 8000 — this default matches that so the two services work
+    # together out of the box with zero configuration.
+    yolo_service_base_url: str = "http://localhost:8001"
+    yolo_service_timeout_seconds: float = 30.0
+    yolo_service_connect_timeout_seconds: float = 5.0
+    yolo_service_max_retries: int = 3
+    yolo_service_retry_backoff_seconds: float = 0.5
+    yolo_service_retry_max_backoff_seconds: float = 8.0
+
+    # --- Event Aggregator: incident detection tuning ------------------------
+    # Minimum detection confidence for a frame to count as an "accident
+    # candidate" frame at all.
+    aggregator_confidence_threshold: float = 0.6
+
+    # How long (in seconds, based on each event's own timestamp) an active
+    # incident is allowed to go without a new qualifying accident frame
+    # before the aggregator considers it over and closes it.
+    aggregator_cooldown_seconds: float = 5.0
+
+    # Minimum wall-clock duration (start_time -> last_seen_time) an incident
+    # must span before it is considered a real incident rather than a single
+    # spurious detection blip. Incidents shorter than this are discarded
+    # rather than emitted.
+    aggregator_min_duration_seconds: float = 1.0
+
+    # --- Defaults -------------------------------------------------------
+    default_camera_id: str = "UNKNOWN_CAM"
+
+    # --- City logic (routing / population / facility optimization) ---------
+    # Whether to run city_logic.initialize() at startup. Disable in
+    # environments without network access or a WorldPop raster (e.g. unit
+    # tests) — the /city/* endpoints will then return 503 instead of
+    # crashing the whole application at boot.
+    city_logic_enabled: bool = True
+    city_logic_area_query: str = "Mumbai, Maharashtra, India"
+    city_logic_radius_m: int = 3000
+    # Default matches where `scripts/fetch_worldpop.py` (run from
+    # entrypoint.sh, before this process starts) downloads a valid raster
+    # to if one isn't already present — see that script for details. Mount
+    # your own file at this path (or point this at it) to skip the
+    # download entirely.
+    city_logic_worldpop_tif_path: str = "/app/data/worldpop.tif"
+    # Source URL for the auto-fetch. Defaults to a public, freely
+    # redistributable (CC BY 4.0) WorldPop 1km raster matching the default
+    # area above (India). Override if you change `city_logic_area_query`
+    # to a different country.
+    city_logic_worldpop_download_url: str = (
+        "https://data.worldpop.org/GIS/Population/Global_2000_2020_1km/2020/IND/"
+        "ind_ppp_2020_1km_Aggregated.tif"
+    )
+    city_logic_kdtree_radius_deg: float = 0.008
+    city_logic_congestion_multiplier: float = 3.0
+    city_logic_n_facility_candidates: int = 50
+    # Safety cap on n_candidates a caller can request via the API.
+    city_logic_max_facility_candidates: int = 500
+
+    # --- Database (PostgreSQL via SQLAlchemy async engine) -----------------
+    database_url: str = "postgresql+asyncpg://citymind:citymind@localhost:5432/citymind"
+    # Separate sync URL for Alembic (psycopg2), derived automatically if unset.
+    database_sync_url: str | None = None
+    database_echo: bool = False
+    database_pool_size: int = 10
+    database_max_overflow: int = 20
+    database_pool_timeout_seconds: float = 30.0
+    # If True, call Base.metadata.create_all() at startup as a fallback when
+    # Alembic migrations haven't been run yet (dev convenience only).
+    database_auto_create_tables: bool = False
+
+    # --- Dashboard --------------------------------------------------------
+    dashboard_cache_ttl_seconds: float = 30.0
+    dashboard_default_page_size: int = 20
+    dashboard_max_page_size: int = 200
+
+    # --- Real-time (WebSocket + optional Redis pub/sub) ---------------------
+    # If unset, the RealtimeHub runs in single-process mode: WebSocket clients
+    # connected to this process see events generated by this process only.
+    # Set to enable fan-out across multiple backend replicas, e.g.
+    # redis://redis:6379/0.
+    redis_url: str | None = None
+
+    # CORS: origins allowed to call this API / open the WebSocket from a
+    # browser (e.g. the CityMind frontend). "*" allows any origin (fine for
+    # local/dev use; restrict this in production).
+    cors_allow_origins: str = "*"
+
+    # --- Live camera polling (optional, continuous ML -> backend pipeline) --
+    # JSON array of {"camera_id", "source_url", "poll_interval_seconds",
+    # "max_frames"} objects, e.g.:
+    #   [{"camera_id":"CAM_01","source_url":"rtsp://192.168.1.50/stream1","poll_interval_seconds":10}]
+    # Left empty by default — no live sources are polled unless you
+    # configure real camera/stream URLs here.
+    live_camera_sources: str = "[]"
+
+    @property
+    def parsed_live_camera_sources(self) -> list[dict]:
+        try:
+            parsed = json.loads(self.live_camera_sources)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        if self.cors_allow_origins.strip() == "*":
+            return ["*"]
+        return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]
+
+    @property
+    def resolved_database_sync_url(self) -> str:
+        """Sync (psycopg2) DSN for Alembic, derived from `database_url` unless overridden."""
+        if self.database_sync_url:
+            return self.database_sync_url
+        return self.database_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+
+
+settings = Settings()

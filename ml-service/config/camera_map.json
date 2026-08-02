@@ -1,0 +1,17 @@
+{
+    "CAM_01": {
+        "road": "MG_ROAD",
+        "lat": 12.9716,
+        "lng": 77.5946
+    },
+    "CAM_02": {
+        "road": "INDIRANAGAR",
+        "lat": 12.9784,
+        "lng": 77.6408
+    },
+    "CAM_14": {
+        "road": "MG_ROAD",
+        "lat": 12.9721,
+        "lng": 77.5951
+    }
+}
